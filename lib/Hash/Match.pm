@@ -5,7 +5,7 @@ use v5.10.0;
 use strict;
 use warnings;
 
-use version 0.77; our $VERSION = version->declare('v0.1.1');
+use version 0.77; our $VERSION = version->declare('v0.2.0');
 
 use Carp qw/ croak /;
 use List::MoreUtils qw/ natatime /;
@@ -77,6 +77,8 @@ match the criteria specified by the rules' values.
 For an array reference, at least one key must exist and match the
 criteria specified in the rules.
 
+=head4 Boolean Operators
+
 The following special keys allow you to use nested boolean operators:
 
 =over
@@ -89,6 +91,12 @@ The following special keys allow you to use nested boolean operators:
 
 Negate the C<$subrules>.
 
+If C<$subrules> is a hash reference, that it is true when not all of
+the rules match.
+
+If C<$subrules> is an array reference, then it is true when none of
+the rules match.
+
 =item C<-and>
 
   [
@@ -96,6 +104,15 @@ Negate the C<$subrules>.
   ]
 
 True if all of the C<%subrules> are true.
+
+You can also use
+
+  {
+    -and => \@subrules,
+  }
+
+which is useful for cases where the keys of C<@subrules> are not
+strings, e.g. regular expressions.
 
 =item C<-or>
 
@@ -107,81 +124,140 @@ True if at least one of the C<@subrules> is true.
 
 =back
 
+=head4 Regular Expressions for Keys
+
+You can use regular expressions for matching keys. For example,
+
+  -or => [
+    qr/xyz/ => $rule,
+  ]
+
+will match if there is any key that matches the regular expression has
+a corresponding value which matches the C<$rule>.
+
+You can also use
+
+  -and => [
+    qr/xyz/ => $rule,
+  ]
+
+to match if all keys that match the regular expression have
+corresponding values which match the C<$rule>.
+
 =cut
 
 sub new {
     my ($class, %args) = @_;
 
-    my $self = _compile_match( '-root' => $args{rules} );
-    bless $self, $class;
+    if (my $rules = $args{rules}) {
+
+        my $root = ((ref $rules) eq 'HASH') ? '-and' : '-or';
+        my $self = _compile_match( $root => $args{rules}, $class );
+        bless $self, $class;
+
+    } else {
+
+        croak "Missing 'rules' attribute";
+
+    }
 }
 
 sub _compile_match {
-    my ( $key, $value ) = @_;
+    my ( $key, $value, $ctx ) = @_;
 
-    my $code;
+    if ( my $key_ref = ( ref $key ) ) {
 
-    if ( my $ref = ( ref $value ) ) {
+        if ( $key_ref eq 'Regexp' ) {
 
-        if ( $ref eq 'Regexp' ) {
+            my $n  = ($ctx eq 'HASH') ? 'all' : 'any';
+            my $fn = List::MoreUtils->can($n);
 
-            $code = sub {
+            return sub {
+                my $hash = $_[0];
+                my @codes = map { _compile_match( $_, $value, $ctx ) }
+                            grep { $key_ref } (keys %{$hash});
+                $fn->( sub { $_->($hash) }, @codes );
+            };
+
+        } else {
+
+            croak "Unsupported key type: '${key_ref}'";
+
+        }
+
+    } elsif ( my $match_ref = ( ref $value ) ) {
+
+        if ( $match_ref eq 'Regexp' ) {
+
+            return sub {
                 my $hash = $_[0];
                 ($hash->{$key} // '') =~ $value;
             };
 
-        } elsif ( $ref eq 'HASH' ) {
+        } elsif ( $match_ref eq 'HASH' ) {
 
-            my @codes = map { _compile_match( $_, $value->{$_} ) }
+            my @codes = map { _compile_match( $_, $value->{$_}, $match_ref ) }
                 ( keys %{$value} );
 
-            my $n  = ($key eq '-not') ? 'notall' : 'all';
+            my $n  = ($key eq '-not') ? 'notall' : ($key eq '-or') ? 'any' : 'all';
             my $fn = List::MoreUtils->can($n);
 
-            $code = sub {
+            return sub {
                 my $hash = $_[0];
                 $fn->( sub { $_->($hash) }, @codes );
             };
 
-        } elsif ( $ref eq 'ARRAY' ) {
+        } elsif ( $match_ref eq 'ARRAY' ) {
 
             my @codes;
+            my $ref = ($key eq '-and') ? 'HASH' : $match_ref;
             my $it = natatime 2, @{$value};
             while ( my ( $k, $v ) = $it->() ) {
-                push @codes, _compile_match( $k, $v );
+                push @codes, _compile_match( $k, $v, $ref );
             }
 
-            my $n  = ($key eq '-not') ? 'none' : 'any';
+            my $n  = ($key eq '-not') ? 'none' : ($key eq '-and') ? 'all' : 'any';
             my $fn = List::MoreUtils->can($n);
 
-            $code = sub {
+            return sub {
                 my $hash = $_[0];
                 $fn->( sub { $_->($hash) }, @codes );
             };
 
-        } elsif ( $ref eq 'CODE' ) {
+        } elsif ( $match_ref eq 'CODE' ) {
 
-            $code = sub {
+            return sub {
                 my $hash = $_[0];
                 (exists $hash->{$key}) ? $value : 0;
             };
 
         } else {
 
-            croak "Unsupported type: ${ref}";
+            croak "Unsupported type: ${match_ref}";
 
        }
 
     } else {
 
-        $code = sub {
-            my $hash = $_[0];
-            ($hash->{$key} // '') eq $value;
-        };
+        if (defined $value) {
+
+            return sub {
+                my $hash = $_[0];
+                ($hash->{$key} // '') eq $value;
+            };
+
+        } else {
+
+            return sub {
+                my $hash = $_[0];
+                (exists $hash->{$key}) && !(defined $hash->{$key})
+            };
+
+        }
 
     }
 
-    return $code;
+    croak "Unhandled condition";
 }
 
 1;

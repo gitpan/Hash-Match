@@ -1,5 +1,17 @@
 Revision history for Hash::Match
 
+v0.2.0  2014-06-25
+
+        - Internal code cleanup.
+
+        - Added support for matching undefined values.
+
+        - Added more POD.
+
+        - Added more error checking.
+
+        - Added support for using regular expressions as keys.
+
 v0.1.1  2014-06-25
 
         - Added missing Changes file.
