@@ -5,7 +5,7 @@ use v5.10.0;
 use strict;
 use warnings;
 
-use version 0.77; our $VERSION = version->declare('v0.2.0');
+use version 0.77; our $VERSION = version->declare('v0.3.0');
 
 use Carp qw/ croak /;
 use List::MoreUtils qw/ natatime /;
@@ -68,7 +68,7 @@ The rules can be a hash or array reference of key-value pairs, e.g.
   {
     k_1 => 'string',    # k_1 eq 'string'
     k_2 => qr/xyz/,     # k_2 =~ qr/xyz/
-    k_3 => sub { ... }, # k_3 exists and sub->($hash) is true
+    k_3 => sub { ... }, # k_3 exists and sub->($hash->{k_3}) is true
   }
 
 For a hash reference, all keys in the rule must exist in the hash and
@@ -144,6 +144,13 @@ You can also use
 to match if all keys that match the regular expression have
 corresponding values which match the C<$rule>.
 
+Note that you cannot use regular expressions as hash keys in Perl. So
+the following I<will not> work:
+
+  {
+    qr/xyz/ => $rule,
+  }
+
 =cut
 
 sub new {
@@ -152,7 +159,7 @@ sub new {
     if (my $rules = $args{rules}) {
 
         my $root = ((ref $rules) eq 'HASH') ? '-and' : '-or';
-        my $self = _compile_match( $root => $args{rules}, $class );
+        my $self = _compile_rule( $root => $args{rules}, $class );
         bless $self, $class;
 
     } else {
@@ -163,6 +170,27 @@ sub new {
 }
 
 sub _compile_match {
+    my ($value) = @_;
+
+    if ( my $match_ref = ( ref $value ) ) {
+
+        return sub { ($_[0] // '') =~ $value } if ( $match_ref eq 'Regexp' );
+
+
+        return sub { $value->($_[0]) } if ( $match_ref eq 'CODE' );
+
+        croak "Unsupported type: ${match_ref}";
+
+    } else {
+
+        return sub { ($_[0] // '') eq $value } if (defined $value);
+
+        return sub { !defined $_[0] };
+
+    }
+}
+
+sub _compile_rule {
     my ( $key, $value, $ctx ) = @_;
 
     if ( my $key_ref = ( ref $key ) ) {
@@ -172,11 +200,12 @@ sub _compile_match {
             my $n  = ($ctx eq 'HASH') ? 'all' : 'any';
             my $fn = List::MoreUtils->can($n);
 
+            my $match = _compile_match($value);
+
             return sub {
                 my $hash = $_[0];
-                my @codes = map { _compile_match( $_, $value, $ctx ) }
-                            grep { $key_ref } (keys %{$hash});
-                $fn->( sub { $_->($hash) }, @codes );
+                $fn->( sub { $match->( $hash->{$_} ) },
+                       grep { $key_ref } (keys %{$hash}) );
             };
 
         } else {
@@ -185,19 +214,14 @@ sub _compile_match {
 
         }
 
-    } elsif ( my $match_ref = ( ref $value ) ) {
+    } else {
 
-        if ( $match_ref eq 'Regexp' ) {
+        my $match_ref = ref $value;
 
-            return sub {
-                my $hash = $_[0];
-                ($hash->{$key} // '') =~ $value;
-            };
+        if ( $match_ref eq 'HASH' ) {
 
-        } elsif ( $match_ref eq 'HASH' ) {
-
-            my @codes = map { _compile_match( $_, $value->{$_}, $match_ref ) }
-                ( keys %{$value} );
+            my @codes = map { _compile_rule( $_, $value->{$_}, $match_ref ) }
+            ( keys %{$value} );
 
             my $n  = ($key eq '-not') ? 'notall' : ($key eq '-or') ? 'any' : 'all';
             my $fn = List::MoreUtils->can($n);
@@ -213,7 +237,7 @@ sub _compile_match {
             my $ref = ($key eq '-and') ? 'HASH' : $match_ref;
             my $it = natatime 2, @{$value};
             while ( my ( $k, $v ) = $it->() ) {
-                push @codes, _compile_match( $k, $v, $ref );
+                push @codes, _compile_rule( $k, $v, $ref );
             }
 
             my $n  = ($key eq '-not') ? 'none' : ($key eq '-and') ? 'all' : 'any';
@@ -224,34 +248,18 @@ sub _compile_match {
                 $fn->( sub { $_->($hash) }, @codes );
             };
 
-        } elsif ( $match_ref eq 'CODE' ) {
+        } elsif ( $match_ref =~ /^(?:Regexp|CODE|)$/ ) {
+
+            my $match = _compile_match($value);
 
             return sub {
                 my $hash = $_[0];
-                (exists $hash->{$key}) ? $value : 0;
+                (exists $hash->{$key}) ? $match->($hash->{$key}) : 0;
             };
 
         } else {
 
             croak "Unsupported type: ${match_ref}";
-
-       }
-
-    } else {
-
-        if (defined $value) {
-
-            return sub {
-                my $hash = $_[0];
-                ($hash->{$key} // '') eq $value;
-            };
-
-        } else {
-
-            return sub {
-                my $hash = $_[0];
-                (exists $hash->{$key}) && !(defined $hash->{$key})
-            };
 
         }
 
