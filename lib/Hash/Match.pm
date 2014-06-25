@@ -5,7 +5,7 @@ use v5.10.0;
 use strict;
 use warnings;
 
-use version 0.77; our $VERSION = version->declare('v0.1.0');
+use version 0.77; our $VERSION = version->declare('v0.1.1');
 
 use Carp qw/ croak /;
 use List::MoreUtils qw/ natatime /;
@@ -47,7 +47,8 @@ modules:
 
 =head1 DESCRIPTION
 
-TODO
+This module allows you to specify complex matching rules for the
+contents of a hash.
 
 =head1 METHODS
 
